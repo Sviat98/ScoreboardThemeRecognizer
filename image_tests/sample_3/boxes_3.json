@@ -1,0 +1,12 @@
+{
+  "_comment": "Debug input for the 'debug: measure boxes' screen. Coordinates are PIXELS of your loaded image (NOT 0..1): x,y = top-left corner; w,h = size. Read them from an image editor (Paint/GIMP/Preview) and adjust to YOUR image's resolution. The values below are an example for a ~1280x720 image. Roles: main_text (letter+bg), serve, prev_set_win, prev_set_lose, current_set (digit+cell bg), current_game (digit+cell bg).",
+  "is_scoreboard": true,
+  "components": [
+    { "role": "main_text",     "x": 28,   "y": 14,  "w": 16, "h": 20 },
+    { "role": "serve",         "x": 235,  "y": 44,  "w": 31,  "h": 18 },
+    { "role": "prev_set_win",  "x": 274,  "y": 44,  "w": 15,  "h": 20 },
+    { "role": "prev_set_lose", "x": 274,  "y": 14,  "w": 15,  "h": 20 },
+    { "role": "current_set",   "x": 326,  "y": 44,  "w": 15, "h": 20 },
+    { "role": "current_game",  "x": 350, "y": 44,  "w": 26, "h": 20 }
+  ]
+}

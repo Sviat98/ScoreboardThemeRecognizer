@@ -1,0 +1,38 @@
+{
+  "main_background_color": {
+    "color": "#030B1C",
+    "alpha": 1.0
+  },
+  "main_text_color": {
+    "color": "#FAFDFE",
+    "alpha": 1.0
+  },
+  "serve_color": {
+    "color": "#F4D355",
+    "alpha": 1.0
+  },
+  "previous_set_win_text_color": {
+    "color": "#DDD484",
+    "alpha": 1.0
+  },
+  "previous_set_lose_text_color": {
+    "color": "#FCFEFF",
+    "alpha": 1.0
+  },
+  "current_set_background_color": {
+    "color": "#030B1C",
+    "alpha": 1.0
+  },
+  "current_set_text_color": {
+    "color": "#FCFEFF",
+    "alpha": 1.0
+  },
+  "current_game_background_color": {
+    "color": "#EDF0F3",
+    "alpha": 1.0
+  },
+  "current_game_text_color": {
+    "color": "#000101",
+    "alpha": 1.0
+  }
+}

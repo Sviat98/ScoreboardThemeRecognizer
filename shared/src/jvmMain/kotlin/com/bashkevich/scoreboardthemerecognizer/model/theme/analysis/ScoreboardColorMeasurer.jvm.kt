@@ -3,20 +3,21 @@ package com.bashkevich.scoreboardthemerecognizer.model.theme.analysis
 import com.bashkevich.scoreboardthemerecognizer.model.file.domain.ImageFile
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import org.opencv.core.Mat
 import org.opencv.core.MatOfByte
 import org.opencv.core.Point
 import org.opencv.core.Rect
 import org.opencv.core.Scalar
-import org.opencv.core.Size
 import org.opencv.imgcodecs.Imgcodecs
 import org.opencv.imgproc.Imgproc
 import java.io.File
 
 private const val TAG = "[ThemeRecognizer]"
 
-/** How much to expand an LLM box before snapping (fraction of its size) — tolerance for LLM drift. */
-private const val SNAP_EXPAND_FRACTION = 0.25
+/** Pretty-printer for the resulting theme JSON dumped to the console. */
+private val THEME_JSON = Json { prettyPrint = true; encodeDefaults = true }
 
 /** Fraction of a region's pixels to discard on each side (drops anti-aliased edges / color mixing). */
 private const val MARGIN_FRACTION = 0.10
@@ -29,6 +30,13 @@ private const val MIN_PIXELS = 4
 
 /** A pixel counts as "background" when within this Euclidean RGB distance of the reference fill. */
 private const val BG_TOLERANCE = 60.0
+
+/** Two buckets this close (RGB) belong to the same glyph cluster (solid fill + its anti-aliasing). */
+private const val GLYPH_CLUSTER_RADIUS = 80.0
+
+/** How far outside a box to sample the surrounding cell background (px). Robust to tight boxes whose
+ *  own interior is dominated by the digit's anti-aliasing halo rather than the real cell fill. */
+private const val OUTER_BAND_PX = 4
 
 /**
  * When env `SCOREBOARD_DEBUG_OVERLAY` is `1`/`true`, writes a PNG with the LLM + refined boxes drawn
@@ -69,63 +77,60 @@ private fun measureMat(color: Mat, layout: AiComponentLayout): ScoreboardCompone
         return h
     }
 
-    /** Expand the box, snap to the strongest foreground glyph; fall back to an inset of the box. */
-    fun glyphRegionOf(box: RoiRect): RoiRect {
-        val expanded = expand(box, width, height, SNAP_EXPAND_FRACTION)
-        return snapToGlyph(color, expanded) ?: inset(box, MARGIN_FRACTION)
-    }
-
-    // 1. FILL backgrounds — inset region, take the dominant (most frequent) bucket.
     val mainTextBox = boxes[ComponentRole.MAIN_TEXT]
     val curSetBox = boxes[ComponentRole.CURRENT_SET]
     val curGameBox = boxes[ComponentRole.CURRENT_GAME]
+    val serveBox = boxes[ComponentRole.SERVE]
+    val prevWinBox = boxes[ComponentRole.PREV_SET_WIN]
+    val prevLoseBox = boxes[ComponentRole.PREV_SET_LOSE]
 
-    val mainBg = mainTextBox?.let { fillColor(regionHist(inset(it, MARGIN_FRACTION)), MIN_PIXELS) }
-    val curSetBg = curSetBox?.let { fillColor(regionHist(inset(it, MARGIN_FRACTION)), MIN_PIXELS) }
-    val curGameBg = curGameBox?.let { fillColor(regionHist(inset(it, MARGIN_FRACTION)), MIN_PIXELS) }
+    // 1. FILL backgrounds — dominant color of the band just OUTSIDE each box (the surrounding cell
+    // background). This is robust to a tight box whose interior is dominated by the digit's
+    // anti-aliasing halo (which would otherwise be misread as the cell fill); falls back to the
+    // full-box mode if the outer band is empty (box touches an image edge).
+    fun cellBg(box: RoiRect): RgbColor? =
+        fillColor(outerBandHist(color, box, OUTER_BAND_PX), MIN_PIXELS) ?: fillColor(regionHist(box), MIN_PIXELS)
 
+    val mainBg = mainTextBox?.let { cellBg(it) }
+    val curSetBg = curSetBox?.let { cellBg(it) }
+    val curGameBg = curGameBox?.let { cellBg(it) }
     val mainBgRef = mainBg ?: RgbColor.BLACK
 
-    // 2. main text glyph (ref = main background).
-    val mainTextRegion = mainTextBox?.let { glyphRegionOf(it) }
-    val mainText = mainTextRegion?.let { glyphColor(regionHist(it), mainBgRef, BG_TOLERANCE, MIN_PIXELS) }
-    // 3. serve — a solid glyph on the main background; its color is the dominant foreground bucket.
-    val serveBox = boxes[ComponentRole.SERVE]
-    val serveRegion = serveBox?.let { glyphRegionOf(it) }
-    val serve = serveRegion?.let {
-        serveColor(regionHist(it), mainBgRef, BG_TOLERANCE, MIN_PIXELS)
+    // 2-6. Glyph text colors. Each glyph is read against its OWN box background (the dominant color of
+    // the full box), with the main background only as a fallback. Using the local background — not the
+    // main one — keeps a separately-shaded cell's own background out of the "foreground" set, so the
+    // digit's solid color is the mode of what remains (no overshoot, no dimming). No snap: on small
+    // precise boxes a snap misfires and can miss the digit, so we measure on the inset box.
+    fun textOf(box: RoiRect, fallbackBg: RgbColor): RgbColor? {
+        val localBg = fillColor(regionHist(box), MIN_PIXELS) ?: fallbackBg
+        return glyphColor(regionHist(inset(box, MARGIN_FRACTION)), localBg, BG_TOLERANCE, MIN_PIXELS)
     }
 
-    // 4. previous-set win/lose glyphs (ref = main background).
-    val prevWinBox = boxes[ComponentRole.PREV_SET_WIN]
-    val prevWinRegion = prevWinBox?.let { glyphRegionOf(it) }
-    val prevWin = prevWinRegion?.let { glyphColor(regionHist(it), mainBgRef, BG_TOLERANCE, MIN_PIXELS) }
-    val prevLoseBox = boxes[ComponentRole.PREV_SET_LOSE]
-    val prevLoseRegion = prevLoseBox?.let { glyphRegionOf(it) }
-    val prevLose = prevLoseRegion?.let { glyphColor(regionHist(it), mainBgRef, BG_TOLERANCE, MIN_PIXELS) }
+    val mainText = mainTextBox?.let { textOf(it, mainBgRef) }
+    val serve = serveBox?.let { textOf(it, mainBgRef) }
+    val prevWin = prevWinBox?.let { textOf(it, mainBgRef) }
+    val prevLose = prevLoseBox?.let { textOf(it, mainBgRef) }
+    val curSetText = curSetBox?.let { textOf(it, curSetBg ?: mainBgRef) }
+    val curGameText = curGameBox?.let { textOf(it, curGameBg ?: mainBgRef) }
 
-    // 5/6. current set/game text glyphs (ref = own background).
-    val curSetTextRegion = curSetBox?.let { glyphRegionOf(it) }
-    val curSetText = curSetTextRegion?.let {
-        glyphColor(regionHist(it), curSetBg ?: mainBgRef, BG_TOLERANCE, MIN_PIXELS)
-    }
-    val curGameTextRegion = curGameBox?.let { glyphRegionOf(it) }
-    val curGameText = curGameTextRegion?.let {
-        glyphColor(regionHist(it), curGameBg ?: mainBgRef, BG_TOLERANCE, MIN_PIXELS)
-    }
+    fun refinedOf(box: RoiRect?): RoiRect = box?.let { inset(it, MARGIN_FRACTION) } ?: ZERO
 
     val components = listOf(
-        ComponentRect(ComponentRole.MAIN_TEXT, mainTextBox ?: ZERO, mainTextRegion ?: mainTextBox ?: ZERO, background = mainBg, text = mainText),
-        ComponentRect(ComponentRole.SERVE, serveBox ?: ZERO, serveRegion ?: serveBox ?: ZERO, text = serve),
-        ComponentRect(ComponentRole.PREV_SET_WIN, prevWinBox ?: ZERO, prevWinRegion ?: prevWinBox ?: ZERO, text = prevWin),
-        ComponentRect(ComponentRole.PREV_SET_LOSE, prevLoseBox ?: ZERO, prevLoseRegion ?: prevLoseBox ?: ZERO, text = prevLose),
-        ComponentRect(ComponentRole.CURRENT_SET, curSetBox ?: ZERO, curSetTextRegion ?: curSetBox ?: ZERO, background = curSetBg, text = curSetText),
-        ComponentRect(ComponentRole.CURRENT_GAME, curGameBox ?: ZERO, curGameTextRegion ?: curGameBox ?: ZERO, background = curGameBg, text = curGameText),
+        ComponentRect(ComponentRole.MAIN_TEXT, mainTextBox ?: ZERO, refinedOf(mainTextBox), background = mainBg, text = mainText),
+        ComponentRect(ComponentRole.SERVE, serveBox ?: ZERO, refinedOf(serveBox), text = serve),
+        ComponentRect(ComponentRole.PREV_SET_WIN, prevWinBox ?: ZERO, refinedOf(prevWinBox), text = prevWin),
+        ComponentRect(ComponentRole.PREV_SET_LOSE, prevLoseBox ?: ZERO, refinedOf(prevLoseBox), text = prevLose),
+        ComponentRect(ComponentRole.CURRENT_SET, curSetBox ?: ZERO, refinedOf(curSetBox), background = curSetBg, text = curSetText),
+        ComponentRect(ComponentRole.CURRENT_GAME, curGameBox ?: ZERO, refinedOf(curGameBox), background = curGameBg, text = curGameText),
     )
 
     printReport(width, height, components)
     val result = ScoreboardComponents(width, height, components)
     writeDebugOverlay(color, layout, result)
+    println(
+        "$TAG ── resulting theme (JSON) ──\n" +
+            THEME_JSON.encodeToString(result.toThemeContent())
+    )
     return result
 }
 
@@ -167,71 +172,32 @@ private fun inset(r: RoiRect, frac: Double): RoiRect {
     return RoiRect(r.x + dx, r.y + dy, w, h)
 }
 
-private fun expand(r: RoiRect, width: Int, height: Int, frac: Double): RoiRect {
-    val dx = (r.width * frac).toInt()
-    val dy = (r.height * frac).toInt()
-    return clampRect(RoiRect(r.x - dx, r.y - dy, r.width + 2 * dx, r.height + 2 * dy), width, height)
-}
+// ---- color measurement (histogram mode + background-distance) --------------
 
 /**
- * Finds the single strongest foreground blob inside [region] and returns its tight bounding rect
- * (image coordinates). The foreground mask is computed by local contrast (reused from the Stage-1
- * analyzer) and morphologically closed so a glyph's outline ring collapses into one solid blob;
- * the largest connected component is the glyph. Returns null when nothing usable is found, so the
- * caller falls back to an inset of the original LLM box.
+ * Histogram of the [padPx]-pixel band just OUTSIDE [box] (the expanded rect minus the box itself).
+ * Its dominant color is the cell background surrounding the glyph — robust to a tight box whose own
+ * interior is dominated by the digit's anti-aliasing halo.
  */
-private fun snapToGlyph(color: Mat, region: RoiRect): RoiRect? {
-    val clamped = clampRect(region, color.width(), color.height())
-    if (clamped.width < 3 || clamped.height < 3) return null
-    val sub = color.submat(Rect(clamped.x, clamped.y, clamped.width, clamped.height))
-    var gray: Mat? = null
-    var mask: Mat? = null
-    var labels: Mat? = null
-    var stats: Mat? = null
-    var centroids: Mat? = null
-    var kernel: Mat? = null
-    try {
-        gray = Mat()
-        Imgproc.cvtColor(sub, gray, Imgproc.COLOR_BGR2GRAY)
-        mask = textForegroundMask(gray)
-
-        // Close gaps in the glyph outline so the connected component is a solid blob.
-        kernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, Size(5.0, 5.0))
-        Imgproc.morphologyEx(mask, mask, Imgproc.MORPH_CLOSE, kernel)
-
-        labels = Mat()
-        stats = Mat()
-        centroids = Mat()
-        val count = Imgproc.connectedComponentsWithStats(mask, labels, stats, centroids, 8)
-        val statsMat = stats // capture the now non-null stats for indexed reads below
-        var best = -1
-        var bestArea = 0.0
-        for (i in 1 until count) {
-            val area = statsMat.get(i, Imgproc.CC_STAT_AREA)[0]
-            if (area > bestArea) {
-                bestArea = area
-                best = i
-            }
+private fun outerBandHist(mat: Mat, box: RoiRect, padPx: Int): Histogram {
+    val outer = clampRect(
+        RoiRect(box.x - padPx, box.y - padPx, box.width + 2 * padPx, box.height + 2 * padPx),
+        mat.width(), mat.height(),
+    )
+    val bx0 = box.x
+    val bx1 = box.x + box.width
+    val by0 = box.y
+    val by1 = box.y + box.height
+    val hist = Histogram(QUANT_BITS)
+    for (y in outer.y until outer.y + outer.height) {
+        for (x in outer.x until outer.x + outer.width) {
+            if (x >= bx0 && x < bx1 && y >= by0 && y < by1) continue // skip the box itself
+            val px = mat.get(y, x) // BGR
+            hist.add(px[0].toInt(), px[1].toInt(), px[2].toInt())
         }
-        if (best < 0) return null
-        val left = statsMat.get(best, Imgproc.CC_STAT_LEFT)[0].toInt()
-        val top = statsMat.get(best, Imgproc.CC_STAT_TOP)[0].toInt()
-        val w = statsMat.get(best, Imgproc.CC_STAT_WIDTH)[0].toInt()
-        val h = statsMat.get(best, Imgproc.CC_STAT_HEIGHT)[0].toInt()
-        if (w < 2 || h < 2) return null
-        return RoiRect(clamped.x + left, clamped.y + top, w, h)
-    } finally {
-        sub.release()
-        gray?.release()
-        mask?.release()
-        labels?.release()
-        stats?.release()
-        centroids?.release()
-        kernel?.release()
     }
+    return hist
 }
-
-// ---- color measurement (histogram mode + background-distance) --------------
 
 private fun buildHistogram(region: Mat): Histogram {
     val h = Histogram(QUANT_BITS)
@@ -311,6 +277,22 @@ private class Histogram(quantBits: Int) {
         return if (bestKey == -1) null else center(bestKey, bestCount)
     }
 
+    /** Like [best] (most frequent bucket satisfying [predicate]) but ignores buckets with fewer than
+     *  [minCount] pixels — drops sparse outlier buckets (JPEG/edge noise) without muting the color. */
+    fun bestWithFloor(minCount: Long, predicate: (RgbColor) -> Boolean): RgbColor? {
+        var bestKey = -1
+        var bestCount = 0L
+        for ((key, count) in counts) {
+            if (count < minCount) continue
+            if (!predicate(center(key, count))) continue
+            if (count > bestCount || (count == bestCount && (bestKey == -1 || key < bestKey))) {
+                bestCount = count
+                bestKey = key
+            }
+        }
+        return if (bestKey == -1) null else center(bestKey, bestCount)
+    }
+
     private fun center(key: Int, count: Long): RgbColor {
         val r = (sumR.getValue(key).toDouble() / count).toInt().coerceIn(0, 255)
         val g = (sumG.getValue(key).toDouble() / count).toInt().coerceIn(0, 255)
@@ -323,22 +305,18 @@ private class Histogram(quantBits: Int) {
 private fun fillColor(h: Histogram, minPixels: Int): RgbColor? =
     if (h.total < minPixels) null else h.best { true }
 
-/** GLYPH role: the bucket farthest from the reference background (the pure glyph color), among
- *  buckets with enough pixels to reject noise. Farthest — not most frequent — so anti-aliasing
- *  mid-tones can't outnumber pure-stroke pixels and mute the text color. */
+/** GLYPH role: locates the glyph by its EXTREME bucket (farthest from the reference background —
+ *  robust even when the glyph is a tiny minority, e.g. a serve ball, so the background's own JPEG
+ *  shade variation can't outvote it), then returns the MODE of the buckets within [GLYPH_CLUSTER_RADIUS]
+ *  of that extreme — the glyph's solid color, not an over-bright edge pixel. */
 private fun glyphColor(h: Histogram, refBg: RgbColor, tolerance: Double, minPixels: Int): RgbColor? {
     if (h.total < minPixels) return null
     val countFloor = (h.total / 100).coerceAtLeast(2L) // ≥1% of pixels (min 2) — drop outlier buckets
-    return h.bestScored(minCount = countFloor, minScore = tolerance) { it.distanceTo(refBg) }
-}
-
-/** serve: a solid filled indicator (ball/dot), so its color is the most frequent bucket far from
- *  the main background. Mode is robust to a few outlier pixels and, unlike the thin-stroke text
- *  case, anti-aliasing does not dominate a filled glyph. We deliberately do NOT require the serve
- *  to differ from the main text — a serve can be nearly text-colored. */
-private fun serveColor(h: Histogram, mainBg: RgbColor, bgTolerance: Double, minPixels: Int): RgbColor? {
-    if (h.total < minPixels) return null
-    return h.best { it.distanceTo(mainBg) > bgTolerance }
+    val extreme = h.bestScored(minCount = countFloor, minScore = tolerance) { it.distanceTo(refBg) }
+        ?: return null
+    return h.bestWithFloor(minCount = countFloor) {
+        it.distanceTo(refBg) > tolerance && it.distanceTo(extreme) <= GLYPH_CLUSTER_RADIUS
+    } ?: extreme
 }
 
 private fun printReport(width: Int, height: Int, components: List<ComponentRect>) {
