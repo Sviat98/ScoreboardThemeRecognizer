@@ -96,13 +96,14 @@ private fun measureMat(color: Mat, layout: AiComponentLayout): ScoreboardCompone
     val curGameBg = curGameBox?.let { cellBg(it) }
     val mainBgRef = mainBg ?: RgbColor.BLACK
 
-    // 2-6. Glyph text colors. Each glyph is read against its OWN box background (the dominant color of
-    // the full box), with the main background only as a fallback. Using the local background — not the
-    // main one — keeps a separately-shaded cell's own background out of the "foreground" set, so the
-    // digit's solid color is the mode of what remains (no overshoot, no dimming). No snap: on small
-    // precise boxes a snap misfires and can miss the digit, so we measure on the inset box.
+    // 2-6. Glyph text colors. Each glyph is read against the SAME outer-band background as the fills
+    // (the cell background surrounding the box) — NOT the box interior. That keeps a tight box (where
+    // the glyph is the majority of the box) from being misread: the reference background still comes
+    // from outside the glyph, so the glyph is always "what differs most from the background", whether
+    // the box is loose or tight, or sits at the image edge. Text = farthest-from-bg bucket to find
+    // the glyph (even a tiny serve ball), then the MODE of that cluster for the solid color.
     fun textOf(box: RoiRect, fallbackBg: RgbColor): RgbColor? {
-        val localBg = fillColor(regionHist(box), MIN_PIXELS) ?: fallbackBg
+        val localBg = cellBg(box) ?: fallbackBg
         return glyphColor(regionHist(inset(box, MARGIN_FRACTION)), localBg, BG_TOLERANCE, MIN_PIXELS)
     }
 
