@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="generate_theme_by_image">Generate by image</string>
+    <string name="generate">Generate</string>
+    <string name="add">Add</string>
+    <string name="navigate_back">Navigate back</string>
+    <string name="select_image_for_upload">Select image</string>
+    <string name="check_internet_connection">Check your internet connection</string>
+    <string name="theme_save_error">Failed to save theme</string>
+    <string name="theme_generate_error">Failed to generate theme</string>
+    <string name="theme_image_format_error">Select a PNG or JPG image</string>
+    <string name="open_file_storage">Open file storage</string>
+    <string name="clear_file">Clear file</string>
+    <string name="theme_name">Theme name</string>
+    <string name="old_value">Old value:</string>
+    <string name="first_participant_won">First participant won</string>
+    <string name="second_participant_won">Second participant won</string>
+    <string name="ret">Ret.</string>
+    <string name="you_need_to_log_in">You need to login for this action</string>
+</resources>
