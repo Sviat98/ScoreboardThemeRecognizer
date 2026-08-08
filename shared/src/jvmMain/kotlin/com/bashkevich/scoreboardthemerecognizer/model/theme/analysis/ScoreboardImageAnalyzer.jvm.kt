@@ -87,11 +87,11 @@ private const val CROP_MAX_AREA_FRACTION = 0.99
 @Suppress("unused")
 private val openCvLoaded: Unit by lazy { OpenCV.loadLocally() }
 
-private fun ensureOpenCvLoaded() {
+internal fun ensureOpenCvLoaded() {
     openCvLoaded
 }
 
-private fun decodeToMat(bytes: ByteArray): Mat {
+internal fun decodeToMat(bytes: ByteArray): Mat {
     val mat = Imgcodecs.imdecode(MatOfByte(*bytes), Imgcodecs.IMREAD_COLOR)
     if (mat.empty()) error("Failed to decode image (unsupported format or corrupt bytes)")
     return mat
@@ -304,7 +304,7 @@ private fun detectContentColumns(color: Mat): List<RoiRect> {
  * which classifies bright band fills as text and merges every column). Pololarity-agnostic because
  * the absolute difference is used.
  */
-private fun textForegroundMask(gray: Mat): Mat {
+internal fun textForegroundMask(gray: Mat): Mat {
     val localMean = Mat()
     Imgproc.blur(gray, localMean, Size(LOCAL_MEAN_BLOCK.toDouble(), LOCAL_MEAN_BLOCK.toDouble()))
     val contrast = Mat()

@@ -8,7 +8,7 @@ kotlinx-serialization = "1.11.0"
 material3 = "1.11.0-alpha07"
 koin = "4.2.2"
 calf = "0.13.0"
-koog = "1.0.0"
+koog = "1.1.1"
 opencv = "4.9.0-0"
 
 [libraries]

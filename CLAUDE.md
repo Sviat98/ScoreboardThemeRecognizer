@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Kotlin Multiplatform + Compose Multiplatform app, **Desktop (JVM) only**. It is a port of the
 "generate scoreboard theme from an image" feature originally from the Android app at
 `D:\AndroidProjects\TennisScoreKeeper` (which uploaded images to a server via Ktor). Here the
-recognition is intended to run on-device (OpenCV + a Koog AI agent), but that is not yet wired up.
+recognition runs on-device via a two-stage pipeline: a Koog vision LLM agent (OpenAI GPT-4o) localizes six scoreboard components, then OpenCV measures the exact colors. An on-device OpenCV heuristic serves as the offline fallback. See `shared/.../model/theme/analysis/`.
 
 Two Gradle modules:
 - `:shared` — KMP module with a single `jvm()` target. All app code (UI, MVI, repository, models) lives here. Because the target is `jvm()`, the platform source sets are **`jvmMain` / `jvmTest`**, *not* `desktopMain`.
@@ -50,11 +50,14 @@ Native distribution formats (DMG/Msi/Deb) are configured in `desktopApp/build.gr
 - Image selection uses Calf (`rememberFilePickerLauncher`) → reads bytes into `ImageFile(name, ByteArray)`. `EMPTY_IMAGE_FILE` is the sentinel for "no image". Supported formats checked in the VM: `.png`/`.jpg`/`.jpeg`.
 - Compose Multiplatform resources live in `shared/src/commonMain/composeResources/` (`values/strings.xml`, `drawable/`). Access via the generated `scoreboardthemerecognizer.shared.generated.resources.Res` and `getString()` / `stringResource()`. Strings are used for all user-facing text (including error messages), so add new copy there rather than hardcoding.
 
-## Important: recognition is currently a STUB
+## Theme recognition: two-stage pipeline (LLM → OpenCV) + offline fallback
 
-`ThemeRepositoryImpl` (`model/theme/repository/ThemeRepositoryImpl.kt`) is the key file to change when implementing real recognition:
-- `generateThemeFromImage(...)` ignores the image and returns a **fixed sample palette** (`stubThemeContent()`).
-- `createTheme(...)` is a **no-op success** — there is no persistence layer (Room/DB was dropped from this port).
-- The Koog (`ai.koog:koog-agents`) and OpenCV (`org.openpnp:opencv`) dependencies are declared in `shared/build.gradle.kts` (OpenCV is `jvmMain`-only) but **not invoked anywhere**. TODOs in `ThemeRepositoryImpl` mark the intended wiring: OpenCV color extraction (load natives with `OpenCV.loadLocally()`, decode bytes to a `Mat`) → Koog `AIAgent` refinement into a coherent palette.
+`ThemeRepositoryImpl` (`model/theme/repository/ThemeRepositoryImpl.kt`) orchestrates recognition:
+
+- **`generateThemeFromImage(...)`** first tries the **Stage-2 LLM path**: `ScoreboardThemeAgent` (`model/theme/analysis/ScoreboardThemeAgent.kt`, Koog `1.1.1`) makes one `executeStructured<AiComponentLayout>` call to OpenAI **GPT-4o** with the raw image at `temperature=0`. The LLM **never names colors** — it returns six normalized (0..1) role boxes (`AiComponentLayout`/`AiBox`, flat `@Serializable`). `measureComponentsColors` (`expect`/`actual`, jvmMain OpenCV) snaps each box to the strongest foreground glyph (local-contrast mask + morph-close + largest connected component — tolerates LLM coordinate drift) and measures background/text by **histogram mode + background-distance**. This is the architecture that worked in `D:\IdeaProjects\TennisScoreKeeperBackend` (`ThemeService` + `ScoreboardColorExtractor`); it avoids the "black instead of navy" failure of asking the LLM to name colors.
+- **Offline / failure fallback:** when `OPENAI_API_KEY` is absent (read via the `readEnvironmentVariable` `expect`/`actual` — commonMain can't reference `java.*` directly), or the LLM call throws, or it returns no boxes, generation falls back to **Stage 1** — the on-device OpenCV heuristic `analyzeScoreboardImage` (`expect`/`actual`, zone-based K-Means with mode colors). The LLM returning `is_scoreboard=false` is **not** a fallback — it surfaces as `LoadResult.Error(NotAScoreboardException)`.
+- **`createTheme(...)`** is still a **no-op success** — there is no persistence layer (Room/DB was dropped from this port).
+
+The Koog (`ai.koog:koog-agents`, `commonMain`) and OpenCV (`org.openpnp:opencv`, `jvmMain`-only) dependencies are both invoked. Natives load once via `OpenCV.loadLocally()`. To exercise the LLM path: set `OPENAI_API_KEY` in the environment before `:desktopApp:run`; without it, generation silently uses the heuristic.
 
 Keep `ThemeRepositoryImpl`'s signature/return type (`LoadResult<ThemeContent, Throwable>`) intact — the ViewModel, error handling, and preview all depend on it.
