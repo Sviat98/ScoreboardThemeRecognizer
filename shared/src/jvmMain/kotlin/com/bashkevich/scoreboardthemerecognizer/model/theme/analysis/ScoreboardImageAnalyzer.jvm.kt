@@ -149,7 +149,7 @@ private fun analyzeMat(color: Mat): ScoreboardZones {
  * Returns the full-image rect when there is no clear margin (the upload is already tightly
  * cropped), so the step is a safe no-op in that case.
  */
-private fun detectScoreboardCrop(color: Mat): Rect {
+internal fun detectScoreboardCrop(color: Mat): Rect {
     val width = color.width()
     val height = color.height()
     val marginColor = estimateMarginColor(color) ?: return Rect(0, 0, width, height)
@@ -256,7 +256,7 @@ private fun estimateMarginColor(color: Mat): Triple<Double, Double, Double>? {
  * A column is a separator when it has no text OR sits on a color boundary; maximal runs of the
  * remaining columns are the content blocks.
  */
-private fun detectContentColumns(color: Mat): List<RoiRect> {
+internal fun detectContentColumns(color: Mat): List<RoiRect> {
     val width = color.width()
     val height = color.height()
 
@@ -294,6 +294,51 @@ private fun detectContentColumns(color: Mat): List<RoiRect> {
     if (start >= 0) rawBlocks.add(RoiRect(start, 0, width - start, height))
 
     return mergeAndFilterBlocks(rawBlocks)
+}
+
+/**
+ * Finds the player ROWS via a horizontal foreground-density projection — the row analogue of
+ * [detectContentColumns]. Returns full-width [RoiRect]s (top → bottom), one per dense horizontal
+ * band; a standard scoreboard yields two (the two players). Used by the structure detector to split
+ * each zone into per-row cells (serve / prev-set win / prev-set lose).
+ */
+internal fun detectRows(color: Mat): List<RoiRect> {
+    val width = color.width()
+    val height = color.height()
+
+    val gray = Mat()
+    Imgproc.cvtColor(color, gray, Imgproc.COLOR_BGR2GRAY)
+    val mask = textForegroundMask(gray)
+    gray.release()
+
+    val maskF = Mat()
+    val rowSumsMat = Mat()
+    try {
+        mask.convertTo(maskF, CvType.CV_32F)
+        Core.reduce(maskF, rowSumsMat, 1, Core.REDUCE_SUM) // height×1: foreground sum per row
+    } finally {
+        mask.release()
+        maskF.release()
+    }
+    val rowDensity = FloatArray(height)
+    rowSumsMat.get(0, 0, rowDensity)
+    rowSumsMat.release()
+
+    val maxDensity = (rowDensity.maxOrNull() ?: 0f).coerceAtLeast(1f)
+    val threshold = maxDensity * COLUMN_THRESHOLD_FRACTION
+
+    val rows = mutableListOf<RoiRect>()
+    var start = -1
+    for (y in 0 until height) {
+        val isContent = rowDensity[y] > threshold
+        if (isContent && start < 0) start = y
+        if (!isContent && start >= 0) {
+            if (y - start >= MIN_BLOCK_WIDTH) rows.add(RoiRect(0, start, width, y - start))
+            start = -1
+        }
+    }
+    if (start >= 0 && height - start >= MIN_BLOCK_WIDTH) rows.add(RoiRect(0, start, width, height - start))
+    return rows
 }
 
 /**
@@ -350,7 +395,7 @@ private fun mergeAndFilterBlocks(blocks: List<RoiRect>): List<RoiRect> {
  * the caller only falls back to equal quarters when this is completely empty (no blocks at all),
  * so the "four equal parts" case is reserved for true detection failure.
  */
-private fun mapBlocksToZones(blocks: List<RoiRect>, height: Int): Map<ScoreboardZoneKind, RoiRect> {
+internal fun mapBlocksToZones(blocks: List<RoiRect>, height: Int): Map<ScoreboardZoneKind, RoiRect> {
     val sorted = blocks.sortedBy { it.x }
     if (sorted.isEmpty()) return emptyMap()
 

@@ -1,31 +1,25 @@
 package com.bashkevich.scoreboardthemerecognizer.model.theme.analysis
 
 import com.bashkevich.scoreboardthemerecognizer.model.file.domain.ImageFile
+import com.bashkevich.scoreboardthemerecognizer.model.theme.remote.ThemeColor
 import com.bashkevich.scoreboardthemerecognizer.model.theme.remote.ThemeContent
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import nu.pattern.OpenCV
 import kotlin.test.Test
 import kotlin.test.assertTrue
 
 /**
- * Golden-master tests against the real samples under `image_tests/sample_N/`: each sample has an
- * `image_N`, a `boxes_N.json` (pixel-coord markup), and a `result_N.json` (the expected theme). The
- * test runs [measureComponentsColors] on the image + boxes and asserts every measured color is close
- * to the expected one. This catches the real failure modes the synthetic tests can't — e.g. a tight
- * box on a digit inverting background/text.
- *
- * Boxes in `boxes_N.json` are in PIXELS, so they are normalized by the decoded image size first, the
- * same way the debug screen does it.
+ * Golden-master tests for the connected-components path's deterministic half. On each
+ * `image_tests/sample_N`: `detectScoreboardElements` must find the elements, and
+ * `measureScoreboardElements` must measure every color close to `result_N.json`. Since the LLM can't
+ * run in a unit test, role→element selection is simulated by matching each expected box from
+ * `boxes_N.json` to its nearest detected element (exactly what the LLM does semantically).
  */
-class ScoreboardSamplesTest {
+class ScoreboardElementsTest {
 
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
-
-    // Tolerance is loose on purpose: broadcast screenshots carry JPEG compression + anti-aliasing, so
-    // the measured solid color and a hand-picked reference pixel can differ by ~50-85 while still
-    // being the same color. The test's job is to catch inversions / wrong hues (distance > 100), not
-    // to pin exact shades.
     private val tolerance = 90.0
 
     @Test
@@ -36,6 +30,9 @@ class ScoreboardSamplesTest {
 
     @Test
     fun sample_3() = checkSample("sample_3")
+
+    @Serializable private data class BoxEntry(val role: String, val x: Double, val y: Double, val w: Double, val h: Double)
+    @Serializable private data class BoxFile(val components: List<BoxEntry> = emptyList())
 
     private fun checkSample(sampleDir: String) {
         val base = projectRoot().resolve("image_tests").resolve(sampleDir)
@@ -49,15 +46,20 @@ class ScoreboardSamplesTest {
 
         OpenCV.loadLocally()
         val bytes = imageFile.readBytes()
-        val mat = decodeToMat(bytes)
-        val width = mat.width()
-        val height = mat.height()
-        mat.release()
+        val elements = runBlocking { detectScoreboardElements(ImageFile(imageFile.name, bytes)) }
+        println("TEST $sampleDir: ${elements.elements.size} elements")
+        assertTrue(elements.elements.isNotEmpty(), "$sampleDir: no elements detected")
 
-        val pxLayout = json.decodeFromString<AiComponentLayout>(boxesFile.readText())
-        val normalized = normalizeByImage(pxLayout, width, height)
+        val boxFile = json.decodeFromString<BoxFile>(boxesFile.readText())
+        val roles = matchRoles(elements.elements, boxFile)
+        fun rb(idx: Int?): String = idx?.let { elements.elements.getOrNull(it)?.rect?.let { r -> "[$idx]=[${r.x},${r.y} ${r.width}x${r.height}]" } } ?: "[$idx]=null"
+        println(
+            "  matched main_text=${rb(roles.mainTextElement)} serve=${rb(roles.serveElement)} " +
+                "win=${rb(roles.prevSetWinElement)} lose=${rb(roles.prevSetLoseElement)} " +
+                "cset=${rb(roles.currentSetElement)} cgame=${rb(roles.currentGameElement)}"
+        )
         val measured = runBlocking {
-            measureComponentsColors(ImageFile(imageFile.name, bytes), normalized).toThemeContent()
+            measureScoreboardElements(ImageFile(imageFile.name, bytes), elements, roles).toThemeContent()
         }
         val expected = json.decodeFromString<ThemeContent>(resultFile.readText())
 
@@ -71,22 +73,29 @@ class ScoreboardSamplesTest {
         assertTrue(failures.isEmpty(), "Theme mismatch:\n" + failures.joinToString("\n"))
     }
 
-    private fun normalizeByImage(layout: AiComponentLayout, width: Int, height: Int): AiComponentLayout {
-        val w = width.toDouble()
-        val h = height.toDouble()
-        return layout.copy(
-            components = layout.components.map { ab ->
-                ab.copy(
-                    x = (ab.x / w).coerceIn(0.0, 1.0),
-                    y = (ab.y / h).coerceIn(0.0, 1.0),
-                    w = (ab.w / w).coerceIn(0.0, 1.0),
-                    h = (ab.h / h).coerceIn(0.0, 1.0),
-                )
-            },
+    /** Simulates the LLM: each role's expected box → the nearest detected element's index. */
+    private fun matchRoles(elements: List<ScoreboardElement>, boxFile: BoxFile): ElementRoles {
+        fun nearest(role: String): Int? {
+            val entry = boxFile.components.firstOrNull { it.role == role } ?: return null
+            val cx = entry.x + entry.w / 2.0
+            val cy = entry.y + entry.h / 2.0
+            return elements.minByOrNull { e ->
+                val ex = e.rect.x + e.rect.width / 2.0
+                val ey = e.rect.y + e.rect.height / 2.0
+                (ex - cx) * (ex - cx) + (ey - cy) * (ey - cy)
+            }?.index
+        }
+        return ElementRoles(
+            mainTextElement = nearest("main_text"),
+            serveElement = nearest("serve"),
+            prevSetWinElement = nearest("prev_set_win"),
+            prevSetLoseElement = nearest("prev_set_lose"),
+            currentSetElement = nearest("current_set"),
+            currentGameElement = nearest("current_game"),
         )
     }
 
-    private fun colorTriples(m: ThemeContent, e: ThemeContent): List<Triple<String, ThemeColorLike, ThemeColorLike>> =
+    private fun colorTriples(m: ThemeContent, e: ThemeContent): List<Triple<String, ThemeColor, ThemeColor>> =
         listOf(
             Triple("main_background_color", m.mainBackgroundColor, e.mainBackgroundColor),
             Triple("main_text_color", m.mainTextColor, e.mainTextColor),
@@ -108,6 +117,3 @@ class ScoreboardSamplesTest {
         )
     }
 }
-
-/** Local alias so the comparison list reads uniformly; it's just [com.bashkevich.scoreboardthemerecognizer.model.theme.remote.ThemeColor]. */
-private typealias ThemeColorLike = com.bashkevich.scoreboardthemerecognizer.model.theme.remote.ThemeColor

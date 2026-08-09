@@ -21,3 +21,8 @@ node_modules/
 # Debug artifacts: generated overlay PNG + personal boxes.json input (see boxes.json.example)
 /boxes.json
 /scoreboard-debug-layout.png
+/cc-probe-*.png
+/cc-overlay-*.png
+
+# Local OpenAI key (env fallback) — never commit
+/openai.key
