@@ -53,9 +53,8 @@ private const val COLUMN_THRESHOLD_FRACTION = 0.08f
 /** Gaps narrower than this (px) don't separate zones — they're intra-column whitespace. */
 private const val MIN_GAP_PX = 10
 
-/** Content blocks narrower than this (px) are dropped as noise. Also drops the narrow local-contrast
- *  "hump" the [LOCAL_MEAN_BLOCK] blur spreads across a band edge on multi-color scoreboards, so a
- *  color boundary doesn't register as a spurious content column. */
+/** Content blocks narrower than this (px) are dropped as noise, so a narrow band-edge response from
+ *  the foreground mask doesn't register as a spurious content column. */
 private const val MIN_BLOCK_WIDTH = 12
 
 /** Quantization step (per channel) for computing a cluster's mode color. */
@@ -66,14 +65,27 @@ private const val MODE_LEVELS = 32
 
 private const val KMEANS_ATTEMPTS = 3
 
-/** Neighborhood size (px) for the local-mean blur used to detect text by local contrast. Kept small
- *  so the band-edge hump stays narrower than [MIN_BLOCK_WIDTH] and gets filtered out, while still
- *  being larger than text stroke width. */
+/** Neighborhood size (px) for the local-contrast mask used in COLUMN detection. Kept small so the
+ *  band-edge hump stays narrower than [MIN_BLOCK_WIDTH] and gets filtered out, while still being
+ *  larger than text stroke width. */
 private const val LOCAL_MEAN_BLOCK = 9
 
-/** A pixel is "text/edge" when it differs from its local mean by more than this (0..255). Flat
- *  fills of any color stay below it, so multi-color bands no longer read as one content block. */
+/** A pixel is "text/edge" (for column detection) when it differs from its local mean by more than
+ *  this (0..255). Flat fills of any color stay below it, so multi-color bands don't read as content. */
 private const val LOCAL_CONTRAST_THRESHOLD = 18
+
+/** Neighborhood size (px) for the polarity-adaptive mask used in ELEMENT detection. Must exceed the
+ *  largest text glyph / cell so the local mean reflects that region's background — this is what keeps
+ *  the polarity test correct inside a LIGHT cell surrounded by dark bands, where a small window would
+ *  smear the two and flood the cell foreground. */
+private const val POLARITY_BLOCK = 31
+
+/** A pixel is "text" when it differs from the local mean by more than this (0..255), on the side
+ *  opposite its local background (dark text where the bg is bright, light text where it is dark). */
+private const val POLARITY_C = 8
+
+/** A local mean above this (0..255) means the local background is "bright", so the text on it is dark. */
+private const val POLARITY_BRIGHT = 128
 
 /** Per-channel tolerance for matching the surrounding margin color when trimming the background. */
 private const val CROP_MARGIN_TOLERANCE = 30.0
@@ -350,15 +362,48 @@ internal fun detectRows(color: Mat): List<RoiRect> {
  * the absolute difference is used.
  */
 internal fun textForegroundMask(gray: Mat): Mat {
+    // Symmetric local contrast: foreground = |gray − localMean| > threshold. Used for COLUMN
+    // detection (separates content columns reliably on multi-color bands). NOT used for per-glyph
+    // element detection — that needs [polarityAdaptiveTextMask], which also recovers dark text on a
+    // light (inverted) cell instead of flooding the whole cell foreground.
     val localMean = Mat()
     Imgproc.blur(gray, localMean, Size(LOCAL_MEAN_BLOCK.toDouble(), LOCAL_MEAN_BLOCK.toDouble()))
     val contrast = Mat()
     Core.absdiff(gray, localMean, contrast)
     localMean.release()
-
     val mask = Mat()
     Imgproc.threshold(contrast, mask, LOCAL_CONTRAST_THRESHOLD.toDouble(), 255.0, Imgproc.THRESH_BINARY)
     contrast.release()
+    return mask
+}
+
+/** Polarity-adaptive foreground for per-glyph ELEMENT detection: where the local background is
+ *  bright, keep DARK pixels (dark text); where it is dark, keep LIGHT pixels. Unlike symmetric
+ *  local contrast this does NOT flood a light cell (e.g. an active current_game cell) foreground and
+ *  swallow its dark digits as holes — the single biggest cause of dropped score slots. */
+internal fun polarityAdaptiveTextMask(gray: Mat): Mat {
+    val localMean = Mat()
+    Imgproc.blur(gray, localMean, Size(POLARITY_BLOCK.toDouble(), POLARITY_BLOCK.toDouble()))
+    val brightBg = Mat()
+    Core.compare(localMean, Scalar(POLARITY_BRIGHT.toDouble()), brightBg, Core.CMP_GT)
+    val darkBg = Mat()
+    Core.bitwise_not(brightBg, darkBg)
+    val lmMinus = Mat()
+    Core.subtract(localMean, Scalar(POLARITY_C.toDouble()), lmMinus)
+    val lmPlus = Mat()
+    Core.add(localMean, Scalar(POLARITY_C.toDouble()), lmPlus)
+    val darkText = Mat()
+    Core.compare(gray, lmMinus, darkText, Core.CMP_LT)
+    val lightText = Mat()
+    Core.compare(gray, lmPlus, lightText, Core.CMP_GT)
+    val partDark = Mat()
+    Core.bitwise_and(brightBg, darkText, partDark)
+    val partLight = Mat()
+    Core.bitwise_and(darkBg, lightText, partLight)
+    val mask = Mat()
+    Core.bitwise_or(partDark, partLight, mask)
+    localMean.release(); brightBg.release(); darkBg.release(); lmMinus.release(); lmPlus.release()
+    darkText.release(); lightText.release(); partDark.release(); partLight.release()
     return mask
 }
 

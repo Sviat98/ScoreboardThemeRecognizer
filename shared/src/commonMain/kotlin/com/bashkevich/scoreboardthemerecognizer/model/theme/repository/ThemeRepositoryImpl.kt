@@ -6,6 +6,7 @@ import com.bashkevich.scoreboardthemerecognizer.model.file.domain.ImageFile
 import com.bashkevich.scoreboardthemerecognizer.model.theme.analysis.NotAScoreboardException
 import com.bashkevich.scoreboardthemerecognizer.model.theme.analysis.ElementThemeAgent
 import com.bashkevich.scoreboardthemerecognizer.model.theme.analysis.analyzeScoreboardImage
+import com.bashkevich.scoreboardthemerecognizer.model.theme.analysis.cleanScoreboardImage
 import com.bashkevich.scoreboardthemerecognizer.model.theme.analysis.detectScoreboardElements
 import com.bashkevich.scoreboardthemerecognizer.model.theme.analysis.measureScoreboardElements
 import com.bashkevich.scoreboardthemerecognizer.model.theme.analysis.readEnvironmentVariable
@@ -31,8 +32,12 @@ class ThemeRepositoryImpl : ThemeRepository {
         // heuristic when there is no API key, no elements are found, or the LLM call fails — so
         // generation still works offline. "Not a scoreboard" is NOT a fallback: it is surfaced as an
         // error.
+        // Best-effort noise pre-cleaning (flags / seeds / country codes, pure OpenCV): strip them
+        // before detection so the LLM (and the offline heuristic) see only the essential data. Any
+        // failure here silently falls back to the original image. Cleaned once, reused by both paths.
+        val working = cleanBestEffort(image)
         return try {
-            LoadResult.Success(generateWithElements(image))
+            LoadResult.Success(generateWithElements(working))
         } catch (e: NotAScoreboardException) {
             LoadResult.Error(e)
         } catch (e: CancellationException) {
@@ -40,13 +45,22 @@ class ThemeRepositoryImpl : ThemeRepository {
         } catch (e: Throwable) {
             println("[ThemeRecognizer] Elements path failed (${e.message}); falling back to Stage-1 heuristic")
             try {
-                LoadResult.Success(analyzeScoreboardImage(image).toThemeContent())
+                LoadResult.Success(analyzeScoreboardImage(working).toThemeContent())
             } catch (e2: CancellationException) {
                 throw e2
             } catch (e2: Throwable) {
                 LoadResult.Error(e2.toNetworkException() ?: e2)
             }
         }
+    }
+
+    private suspend fun cleanBestEffort(image: ImageFile): ImageFile = try {
+        cleanScoreboardImage(image)
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Throwable) {
+        println("[ThemeRecognizer] noise cleaning failed (${e.message}); using original image")
+        image
     }
 
     private suspend fun generateWithElements(image: ImageFile): ThemeContent {

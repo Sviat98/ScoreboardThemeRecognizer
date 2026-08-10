@@ -9,10 +9,17 @@ import org.opencv.imgproc.Imgproc
 private const val ELEMENT_MIN_AREA = 25
 private const val ELEMENT_AREA_FRACTION = 0.20
 private const val ELEMENT_MIN_W = 6
-private const val ELEMENT_MAX_W = 60
+// Wide enough to admit a MERGED surname as a single element (~6–8 letters ≈ 60–90px at glyph
+// height ~22). Previously 60, which dropped "SINNER"/"ALCARAZ"/"DJOKOVIC" wholesale once their
+// letters touched — leaving word-segmentation without a surname reference, so a lone country
+// code/seed became "the widest word" and was wrongly kept. Band fills are still rejected by the
+// area cap below; this only lifts the per-glyph width ceiling.
+private const val ELEMENT_MAX_W = 140
 private const val ELEMENT_MIN_H = 6
 private const val ELEMENT_MAX_H = 40
-private const val ELEMENT_MAX_ASPECT = 4.0
+// Relaxed from 4.0 so an 8-letter merged surname (aspect up to ~4.5) survives. Real horizontal
+// dividers / band edges sit at aspect >10, so 6.0 still rejects them.
+private const val ELEMENT_MAX_ASPECT = 6.0
 
 internal actual suspend fun detectScoreboardElements(image: ImageFile): ScoreboardElements =
     withContext(Dispatchers.Default) {
@@ -31,7 +38,7 @@ internal actual suspend fun detectScoreboardElements(image: ImageFile): Scoreboa
 
                 val gray = Mat()
                 Imgproc.cvtColor(work, gray, Imgproc.COLOR_BGR2GRAY)
-                val mask = textForegroundMask(gray)
+                val mask = polarityAdaptiveTextMask(gray)
                 gray.release()
                 // Deliberately NO morphology close: it merges dense text on small scoreboards into
                 // one giant blob (validated on the samples). Connected components on the raw mask
