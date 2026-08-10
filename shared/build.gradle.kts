@@ -33,6 +33,7 @@ kotlin {
         }
         jvmMain.dependencies {
             implementation(libs.opencv)
+            implementation(libs.color.thief)
         }
         commonTest.dependencies {
             implementation(libs.kotlin.test)

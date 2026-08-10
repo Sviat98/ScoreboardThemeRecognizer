@@ -10,6 +10,9 @@ koin = "4.2.2"
 calf = "0.13.0"
 koog = "1.1.1"
 opencv = "4.9.0-0"
+# Sven Woltmann's color-thief-java (MMCQ palette). Original de.androidpit namespace, Java 8
+# bytecode — the io.github.sundenjaeger republish (1.1.2-2) is Java 25 bytecode, unusable here.
+color-thief = "1.1.2"
 
 [libraries]
 kotlin-test = { module = "org.jetbrains.kotlin:kotlin-test", version.ref = "kotlin" }
@@ -33,6 +36,7 @@ koin-compose-viewmodel = { module = "io.insert-koin:koin-compose-viewmodel" }
 calf-file-picker = { module = "com.mohamedrejeb.calf:calf-file-picker", version.ref = "calf" }
 koog-agents = { module = "ai.koog:koog-agents", version.ref = "koog" }
 opencv = { module = "org.openpnp:opencv", version.ref = "opencv" }
+color-thief = { module = "de.androidpit:color-thief", version.ref = "color-thief" }
 
 [plugins]
 composeMultiplatform = { id = "org.jetbrains.compose", version.ref = "composeMultiplatform" }

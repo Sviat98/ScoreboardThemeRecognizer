@@ -21,11 +21,12 @@ import androidx.compose.ui.unit.dp
 import com.bashkevich.scoreboardthemerecognizer.screens.debug.BoxThemeDebugScreen
 import com.bashkevich.scoreboardthemerecognizer.screens.debug.ElementsDebugScreen
 import com.bashkevich.scoreboardthemerecognizer.screens.debug.NoiseCleaningDebugScreen
+import com.bashkevich.scoreboardthemerecognizer.screens.debug.PaletteDebugScreen
 import com.bashkevich.scoreboardthemerecognizer.screens.settings.generatetheme.GenerateThemeScreen
 import com.bashkevich.scoreboardthemerecognizer.screens.settings.generatetheme.GenerateThemeViewModel
 import org.koin.compose.viewmodel.koinViewModel
 
-private enum class DebugScreen { ELEMENTS, BOXES, NOISE }
+private enum class DebugScreen { ELEMENTS, BOXES, NOISE, PALETTE }
 
 /**
  * Back-navigation handle for screens. The original app used a NavController
@@ -57,6 +58,10 @@ fun App() {
                     onBack = { debug = null },
                     modifier = Modifier.fillMaxSize(),
                 )
+                DebugScreen.PALETTE -> PaletteDebugScreen(
+                    onBack = { debug = null },
+                    modifier = Modifier.fillMaxSize(),
+                )
             }
             if (debug == null) {
                 Column(
@@ -67,6 +72,7 @@ fun App() {
                     TextButton(onClick = { debug = DebugScreen.ELEMENTS }) { Text("debug: opencv elements") }
                     TextButton(onClick = { debug = DebugScreen.BOXES }) { Text("debug: theme from boxes") }
                     TextButton(onClick = { debug = DebugScreen.NOISE }) { Text("debug: noise cleaning") }
+                    TextButton(onClick = { debug = DebugScreen.PALETTE }) { Text("debug: color palette") }
                 }
             }
         }
